@@ -1,200 +1,267 @@
 # Excalidraw MCP Server: Powerful Drawing API for LLM Integration
 
-A comprehensive Model Context Protocol (MCP) server that enables seamless interaction with Excalidraw diagrams and drawings. This server provides LLMs (Large Language Models) with the ability to create, modify, query, and manipulate Excalidraw drawings through a structured, developer-friendly API.
+A comprehensive Model Context Protocol (MCP) server that enables seamless interaction with Excalidraw diagrams and drawings. This server provides LLMs (Large Language Models) with the ability to create, modify, query, and manipulate Excalidraw drawings through a structured, developer‑friendly API.
 
 ## Features
 
-- **Full Excalidraw Element Control**: Create, update, delete, and query any Excalidraw element
-- **Advanced Element Manipulation**: Group, align, distribute, lock, and unlock elements
-- **Resource Management**: Access and modify scene information, libraries, themes, and elements
-- **Easy Integration**: Works with Claude Desktop and other LLM platforms
-- **Docker Support**: Simple deployment with containerization options
+- **Full Excalidraw Element Control**  
+  Create, update, delete, and query any Excalidraw element (rectangle, ellipse, diamond, text, arrow, etc.), including support for:
+  - position (`x`, `y`)
+  - dimensions (`width`, `height`)
+  - styling (`backgroundColor`, `strokeColor`, `strokeWidth`, `roughness`, `opacity`)
+  - text (`text`, `fontSize`, `fontFamily`)
+  - line geometry (`points`)
+  - locking (`locked` flag)  
+- **Advanced Element Manipulation**  
+  Group, ungroup, align, distribute, lock, and unlock elements.  
+- **Scene & AppState Management**  
+  - Track and modify scene‑level state: `theme`, `viewBackgroundColor`, `viewport` (scroll & zoom), `selectedElements`, `groups`.  
+  - Retrieve library of all elements or individual scene properties.  
+- **Save Scene**  
+  Export the current scene (elements + appState) to a `.excalidraw` file on disk.  
+- **Resource Management**  
+  Access and modify scene information, element library, theme, and raw element data.  
+- **Easy Integration**  
+  Compatible with Claude Desktop, Cursor, and any other LLM platforms that support MCP.  
+- **Docker Support**  
+  Simple containerized deployment for zero‑dependency installs.
+
+---
 
 ## API Tools Reference
 
 ### Element Creation and Modification
 
-* **create_element**
-  * Create a new Excalidraw element (rectangle, ellipse, diamond, etc.)
-  * Required inputs: `type`, `x`, `y` coordinates
-  * Optional inputs: dimensions, colors, styling properties
+#### `create_element`  
+Create a new Excalidraw element.  
+- **Input**  
+  ```json
+  {
+    "type": "<element type>",
+    "x": <number>,
+    "y": <number>,
+    "width": <number, optional>,
+    "height": <number, optional>,
+    "points": [{"x":<number>,"y":<number>}…],
+    "backgroundColor": "<hex>",
+    "strokeColor": "<hex>",
+    "strokeWidth": <number>,
+    "roughness": <number>,
+    "opacity": <0–1>,
+    "text": "<string>",
+    "fontSize": <number>,
+    "fontFamily": "<string>",
+    "locked": <boolean>
+  }
+  ```
+- **Output**  
+  ```json
+  { "id": "<generated‑id>", "type": "<element type>", "created": true }
+  ```
 
-* **update_element**
-  * Update an existing Excalidraw element by ID
-  * Required input: `id` of the element to update
-  * Optional inputs: any element property to modify
+#### `update_element`  
+Update properties of an existing element.  
+- **Input**  
+  ```json
+  {
+    "id": "<element id>",
+  }
+  ```
+- **Output**  
+  ```json
+  { "id": "<element id>", "updated": true, "version": <new‑version‑number> }
+  ```
 
-* **delete_element**
-  * Delete an Excalidraw element
-  * Required input: `id` of the element to delete
+#### `delete_element`  
+Remove an element from the scene.  
+- **Input**  
+  ```json
+  { "id": "<element id>" }
+  ```
+- **Output**  
+  ```json
+  { "id": "<element id>", "deleted": true }
+  ```
 
-* **query_elements**
-  * Query elements with optional filtering
-  * Optional inputs: `type` to filter by element type, `filter` object with key-value pairs
+#### `query_elements`  
+List elements matching optional filters.  
+- **Input**  
+  ```json
+  {
+    "type": "<element type>",        
+    "filter": { "<prop>": <value> }  
+  }
+  ```
+- **Output**  
+  ```json
+  [ { /* element objects */ } … ]
+  ```
 
 ### Resource Management
 
-* **get_resource**
-  * Get a specific resource like scene information or all elements
-  * Required input: `resource` type (scene, library, theme, elements)
+#### `get_resource`  
+Retrieve scene or library information.  
+- **Input**  
+  ```json
+  { "resource": "scene"|"library"|"theme"|"elements" }
+  ```
+- **Output**  
+  - **scene** → `{ theme, viewport: {x,y,zoom}, selectedElements: […] }`  
+  - **library**/**elements** → `{ elements: [ … ] }`  
+  - **theme** → `{ theme: "light"|"dark" }`
 
 ### Element Organization
 
-* **group_elements**
-  * Group multiple elements together
-  * Required input: `elementIds` array of element IDs to group
+#### `group_elements` / `ungroup_elements`  
+Group or ungroup element collections.  
+- **Input**  
+  ```json
+  { "elementIds": ["id1","id2",…] }
+  { "groupId": "<group id>" }
+  ```
+- **Output**  
+  ```json
+  { "groupId": "<new‑id>", "elementIds": […], "ungrouped": true? }
+  ```
 
-* **ungroup_elements**
-  * Ungroup a group of elements
-  * Required input: `groupId` of the group to ungroup
+#### `align_elements`  
+Align multiple elements to specified edge or center.  
+- **Input**  
+  ```json
+  { "elementIds": […], "alignment": "left"|"center"|"right"|"top"|"middle"|"bottom" }
+  ```
+- **Output**  
+  `{ aligned: true, elementIds: […], alignment: "<alignment>" }`
 
-* **align_elements**
-  * Align multiple elements based on specified alignment
-  * Required inputs: `elementIds` array and `alignment` (left, center, right, top, middle, bottom)
+#### `distribute_elements`  
+Evenly space elements horizontally or vertically.  
+- **Input**  
+  ```json
+  { "elementIds": […], "direction": "horizontal"|"vertical" }
+  ```
+- **Output**  
+  `{ distributed: true, elementIds: […], direction: "<direction>" }`
 
-* **distribute_elements**
-  * Distribute elements evenly across space
-  * Required inputs: `elementIds` array and `direction` (horizontal or vertical)
+#### `lock_elements` / `unlock_elements`  
+Prevent or allow editing of elements.  
+- **Input**  
+  ```json
+  { "elementIds": [… ] }
+  ```
+- **Output**  
+  `{ locked: true|false, elementIds: […] }`
 
-* **lock_elements**
-  * Lock elements to prevent modification
-  * Required input: `elementIds` array of elements to lock
+### Scene Management
 
-* **unlock_elements**
-  * Unlock elements to allow modification
-  * Required input: `elementIds` array of elements to unlock
+#### `save_scene`  
+Export current scene (elements + appState) to a `.excalidraw` file.  
+- **Input**  
+  ```json
+  { "filename": "<optional, must end with .excalidraw>" }
+  ```
+- **Output**  
+  `Scene saved successfully to <filename>` or error message.
 
-## Integration with Claude Desktop
+---
 
-To use this server with the Claude Desktop application, add the following configuration to the "mcpServers" section of your `claude_desktop_config.json`:
+## Integration Examples
+
+### Claude Desktop
+
+```json
+"mcpServers": {
+  "excalidraw": {
+    "command": "node",
+    "args": ["src/index.js"],
+    "env": {
+      "LOG_LEVEL": "info",
+      "DEBUG": "false"
+    }
+  }
+}
+```
+
+### Cursor
+
+Create `.cursor/mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "excalidraw": {
       "command": "node",
-      "args": ["src/index.js"],
-      "env": {
-        "LOG_LEVEL": "info",
-        "DEBUG": "false"
-      }
+      "args": ["/absolute/path/to/mcp_excalidraw/src/index.js"],
+      "env": { "LOG_LEVEL": "info", "DEBUG": "false" }
     }
   }
 }
 ```
 
-## Integration with Cursor
+### Docker
 
-To use this server with Cursor, create a `.cursor/mcp.json` file in your workspace with the following configuration:
+```bash
+docker run -i --rm mcp/excalidraw
+```
+
+Or in MCP config:
 
 ```json
-{
-  "mcpServers": {
-    "excalidraw": {
-      "command": "node",
-      "args": [
-        "/path/to/your/directory/mcp_excalidraw/src/index.js"
-      ],
-      "env": {
-        "LOG_LEVEL": "info",
-        "DEBUG": "false"
-      }
-    }
+"mcpServers": {
+  "excalidraw": {
+    "command": "docker",
+    "args": ["run", "-i", "--rm", "mcp/excalidraw"],
+    "env": { "LOG_LEVEL": "info", "DEBUG": "false" }
   }
 }
 ```
 
-Make sure to:
-1. Replace `/path/to/your/directory` with the actual absolute path to your mcp_excalidraw installation
-2. Create the `.cursor` directory if it doesn't exist
-3. Ensure the path to `index.js` is correct and the file exists
-
-### Docker Integration
-
-```json
-{
-  "mcpServers": {
-    "excalidraw": {
-      "command": "docker",
-      "args": ["run", "-i", "--rm", "mcp/excalidraw"],
-      "env": {
-        "LOG_LEVEL": "info",
-        "DEBUG": "false"
-      }
-    }
-  }
-}
-```
+---
 
 ## Installation Guide
-
-### NPM Installation
 
 ```bash
 # Install dependencies
 npm install
 
-# Start the server
+# Run development server
 npm start
 ```
 
-### Docker Installation
+### Docker
 
 ```bash
-# Build the Docker image
 docker build -t mcp/excalidraw .
-
-# Run the container
 docker run -i --rm mcp/excalidraw
 ```
 
+---
+
 ## Configuration Options
 
-The server can be configured using the following environment variables:
+Set via environment variables in `.env` or your container:
 
-- `LOG_LEVEL` - Set the logging level (default: "info")
-- `DEBUG` - Enable debug mode (default: "false")
-- `DEFAULT_THEME` - Set the default theme (default: "light")
+- `LOG_LEVEL` — logging level (default: `"info"`)  
+- `DEBUG`     — debug mode (`"true"`/`"false"`, default: `"false"`)  
+- `DEFAULT_THEME` — default UI theme (`"light"`/`"dark"`, default: `"light"`)
+
+---
 
 ## Usage Examples
 
-Here are some practical examples of how to use the Excalidraw MCP server:
-
-### Creating a Rectangle Element
+### Create & Lock a Rectangle
 
 ```json
-{
-  "type": "rectangle",
-  "x": 100,
-  "y": 100,
-  "width": 200,
-  "height": 100,
-  "backgroundColor": "#ffffff",
-  "strokeColor": "#000000",
-  "strokeWidth": 2,
-  "roughness": 1
-}
+{"type":"rectangle","x":50,"y":50,"width":100,"height":80,"backgroundColor":"#f3f3f3","strokeColor":"#333","locked":true}
+
+{ "id":"abc123","type":"rectangle","created":true }
+
+{"elementIds":["abc123"]}
 ```
 
-### Querying Specific Elements
+### Save Scene to File
 
 ```json
-{
-  "type": "rectangle",
-  "filter": {
-    "strokeColor": "#000000"
-  }
-}
+{"filename":"my_drawing.excalidraw"}
+
+"Scene saved successfully to my_drawing.excalidraw"
 ```
-
-### Grouping Multiple Elements
-
-```json
-{
-  "elementIds": ["elem1", "elem2", "elem3"]
-}
-```
-
-## License
-
-This Excalidraw MCP server is licensed under the MIT License. You are free to use, modify, and distribute the software, subject to the terms and conditions of the MIT License. For more details, please see the LICENSE file in the project repository. 

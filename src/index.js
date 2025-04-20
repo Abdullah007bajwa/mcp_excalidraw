@@ -1,18 +1,18 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { 
-  CallToolRequestSchema, 
-  ListToolsRequestSchema 
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import dotenv from 'dotenv';
 import logger from './utils/logger.js';
-import { 
+import {
   elements,
-  validateElement, 
-  generateId, 
-  EXCALIDRAW_ELEMENT_TYPES 
+  generateId,
+  EXCALIDRAW_ELEMENT_TYPES
 } from './types.js';
+import fs from 'fs/promises'; // ADDED: Import file system promises API
 
 // Load environment variables
 dotenv.config();
@@ -20,6 +20,7 @@ dotenv.config();
 // In-memory storage for scene state
 const sceneState = {
   theme: 'light',
+  viewBackgroundColor: '#ffffff', // ADDED: Common AppState property
   viewport: { x: 0, y: 0, zoom: 1 },
   selectedElements: new Set(),
   groups: new Map()
@@ -40,7 +41,8 @@ const ElementSchema = z.object({
   opacity: z.number().optional(),
   text: z.string().optional(),
   fontSize: z.number().optional(),
-  fontFamily: z.string().optional()
+  fontFamily: z.number().optional(),
+  locked: z.boolean().optional() // ADDED: Make sure locked status is saved
 });
 
 const ElementIdSchema = z.object({
@@ -72,6 +74,11 @@ const QuerySchema = z.object({
 
 const ResourceSchema = z.object({
   resource: z.enum(['scene', 'library', 'theme', 'elements'])
+});
+
+// ADDED: Schema for the new save_scene tool
+const SaveSceneSchema = z.object({
+  filename: z.string().optional().describe("Optional filename ending with .excalidraw (default: mcp_scene.excalidraw)")
 });
 
 // Initialize MCP server
@@ -257,6 +264,20 @@ const server = new Server(
             required: ['elementIds']
           }
         },
+
+        // ADDED: Definition for the save_scene tool
+        save_scene: {
+          description: 'Saves the current Excalidraw elements and scene state to a .excalidraw file.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              filename: {
+                type: 'string',
+                description: 'Optional filename ending with .excalidraw (default: mcp_scene.excalidraw)'
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -267,51 +288,118 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     const { name, arguments: args } = request.params;
     logger.info(`Handling tool call: ${name}`);
-    
+
     switch (name) {
       case 'create_element': {
-        const params = ElementSchema.parse(args);
-        logger.info('Creating element', { type: params.type });
-
+        if (args.fontFamily && typeof args.fontFamily === 'string') {
+          const fontMap = { "virgil": 1, "helvetica": 2, "cascadia": 3 };
+          args.fontFamily = fontMap[args.fontFamily.toLowerCase()] ?? 1;
+        }
+      
+        const params = ElementSchema.passthrough().parse(args);
         const id = generateId();
+        const now = Date.now();
+        const seed = Math.floor(Math.random() * 2 ** 31);
+        const versionNonce = Math.floor(Math.random() * 2 ** 31);
+      
         const element = {
           id,
-          ...params,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          version: 1
+          type: params.type,
+          x: params.x,
+          y: params.y,
+          width: params.width ?? 10,
+          height: params.height ?? 10,
+          seed,
+          version: 1,
+          versionNonce,
+          isDeleted: false,
+          locked: params.locked ?? false,
+          angle: params.angle ?? 0,
+          fillStyle: params.fillStyle ?? 'hachure',
+          strokeWidth: params.strokeWidth ?? 1,
+          strokeStyle: params.strokeStyle ?? 'solid',
+          roughness: params.roughness ?? 1,
+          opacity: params.opacity !== undefined ? Math.max(0, Math.min(100, params.opacity * 100)) : 100,
+          groupIds: [],
+          frameId: null,
+          roundness: params.roundness ?? null,
+          boundElements: null,
+          link: null,
+          updated: now,
+          strokeColor: params.strokeColor ?? '#000000',
+          backgroundColor: params.backgroundColor ?? 'transparent',
+          text: params.text ?? '',
+          fontSize: params.fontSize ?? 20,
+          fontFamily: params.fontFamily ?? 1,
+          textAlign: params.textAlign ?? 'center',
+          verticalAlign: params.verticalAlign ?? 'middle',
+          containerId: null,
+          originalText: params.text ?? '',
+          points: params.points,
+          startBinding: null,
+          endBinding: null,
+          lastCommittedPoint: null,
+          startArrowhead: null,
+          endArrowhead: null,
+          fileId: null,
+          scale: [1, 1],
+          status: 'saved',
         };
-
+      
+        if ((element.type === 'arrow' || element.type === 'line') && (!element.points || element.points.length < 2)) {
+          element.points = [[0, 0], [element.width || 10, element.height || 0]];
+          if (element.type === 'arrow') {
+            element.startArrowhead = element.startArrowhead ?? null;
+            element.endArrowhead = element.endArrowhead ?? 'arrow';
+          }
+        }
+      
+        Object.keys(element).forEach(key => {
+          if (element[key] === undefined) delete element[key];
+        });
+      
         elements.set(id, element);
-        
         return {
-          content: [{ type: 'text', text: JSON.stringify(element, null, 2) }]
+          content: [{ type: 'text', text: JSON.stringify({ id: element.id, type: element.type, created: true }, null, 2) }]
         };
       }
       
       case 'update_element': {
-        const params = ElementSchema.partial().extend(ElementIdSchema).parse(args);
-        const { id, ...updates } = params;
-        
+        const rawParams = ElementSchema.partial().extend({ id: ElementIdSchema.shape.id }).passthrough().parse(args);
+        const { id, ...updates } = rawParams;
+      
         if (!id) throw new Error('Element ID is required');
-
+      
         const existingElement = elements.get(id);
         if (!existingElement) throw new Error(`Element with ID ${id} not found`);
-
-        // Validate the updated element
-        ElementSchema.parse({ ...existingElement, ...updates });
-
-        const updatedElement = {
+      
+        if (typeof updates.fontFamily === 'string') {
+          const fontMap = { "virgil": 1, "helvetica": 2, "cascadia": 3 };
+          updates.fontFamily = fontMap[updates.fontFamily.toLowerCase()] ?? existingElement.fontFamily;
+        }
+      
+        if (updates.opacity !== undefined) {
+          updates.opacity = Math.max(0, Math.min(100, updates.opacity * 100));
+        }
+      
+        const potentialNewElement = {
           ...existingElement,
           ...updates,
-          updatedAt: new Date().toISOString(),
-          version: existingElement.version + 1
+          version: (existingElement.version || 0) + 1,
+          versionNonce: Math.floor(Math.random() * 2 ** 31),
+          updated: Date.now()
         };
-
-        elements.set(id, updatedElement);
-        
+      
+        Object.keys(potentialNewElement).forEach(key => {
+          if (key === 'createdAt' || key === 'updatedAt') delete potentialNewElement[key];
+        });
+      
+        elements.set(id, potentialNewElement);
+        logger.info(`Element ${id} updated.`);
+        logger.debug('Stored element data after update:', potentialNewElement);
+      
         return {
-          content: [{ type: 'text', text: JSON.stringify(updatedElement, null, 2) }]
+          content: [{ type: 'text', text: JSON.stringify({ id: potentialNewElement.id, updated: true, version: potentialNewElement.version }, null, 2) }]
         };
       }
       
@@ -478,7 +566,77 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }]
         };
       }
-      
+
+      // ADDED: Handler case for the new save_scene tool
+      case 'save_scene': {
+        const params = SaveSceneSchema.parse(args || {});
+        const filename = params.filename || 'mcp_scene.excalidraw';
+
+        if (!filename.endsWith('.excalidraw')) {
+          throw new Error("Filename must end with .excalidraw");
+        }
+
+        // Convert selectedElements Set to the expected object format
+        const selectedElementIds = {};
+        sceneState.selectedElements.forEach(id => {
+          selectedElementIds[id] = true;
+        });
+
+        // Ensure all elements have points in the correct format
+        const elementsToSave = Array.from(elements.values()).map(el => {
+          if ((el.type === 'arrow' || el.type === 'line') && (!el.points || el.points.length < 2)) {
+            logger.warn(`Element ${el.id} of type ${el.type} has invalid/missing points. Adding default points.`);
+            el.points = [[0, 0], [el.width || 10, el.height || 0]];
+          }
+          return el;
+        });
+
+        const sceneData = {
+          type: "excalidraw",
+          version: 2,
+          source: "mcp-server",
+          elements: elementsToSave,
+          appState: {
+            viewBackgroundColor: sceneState.viewBackgroundColor ?? "#ffffff",
+            scrollX: sceneState.viewport?.x ?? 0,
+            scrollY: sceneState.viewport?.y ?? 0,
+            zoom: { value: sceneState.viewport?.zoom ?? 1 }, // Updated zoom format
+            selectedElementIds: selectedElementIds, // Updated selectedElementIds format
+            gridSize: null,
+            zenModeEnabled: false,
+            editingGroupId: null,
+            theme: sceneState.theme ?? 'light',
+            currentItemStrokeColor: "#000000",
+            currentItemBackgroundColor: "transparent",
+            currentItemFillStyle: "hachure",
+            currentItemStrokeWidth: 1,
+            currentItemStrokeStyle: "solid",
+            currentItemRoughness: 1,
+            currentItemOpacity: 100,
+            currentItemFontFamily: 1,
+            currentItemFontSize: 20,
+            currentItemTextAlign: "center",
+            currentItemStartArrowhead: null,
+            currentItemEndArrowhead: "arrow",
+          },
+          files: {}
+        };
+
+        try {
+          await fs.writeFile(filename, JSON.stringify(sceneData, null, 2), 'utf8');
+          logger.info(`Scene saved successfully to ${filename}`);
+          return {
+            content: [{ type: 'text', text: `Scene saved successfully to ${filename}` }]
+          };
+        } catch (error) {
+          logger.error(`Error saving scene: ${error.message}`, { error });
+          return {
+            content: [{ type: 'text', text: `Error saving scene: ${error.message}` }],
+            isError: true
+          };
+        }
+      }
+
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
@@ -494,7 +652,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // Set up request handler for listing available tools
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   logger.info('Listing available tools');
-  
+
   const tools = [
     {
       name: 'create_element',
@@ -679,6 +837,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
         required: ['elementIds']
       }
+    },
+    {
+      name: 'save_scene',
+      description: 'Saves the current Excalidraw elements and scene state to a .excalidraw file.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          filename: {
+            type: 'string',
+            description: 'Optional filename ending with .excalidraw (default: mcp_scene.excalidraw)'
+          }
+        }
+      }
     }
   ];
   
@@ -699,9 +870,8 @@ async function runServer() {
 
 runServer();
 
-// For testing and debugging purposes
 if (process.env.DEBUG === 'true') {
   logger.debug('Debug mode enabled');
 }
 
-export default server; 
+export default server;
